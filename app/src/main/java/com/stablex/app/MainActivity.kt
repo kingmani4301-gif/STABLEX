@@ -105,143 +105,57 @@ class MainActivity : ComponentActivity() {
             val settings by settingsFlow().collectAsState(initial = UserSettings())
             val active by GamingSessionService.active.collectAsState()
             val thermal by GamingSessionService.thermal.collectAsState()
-            val protected by GamingSessionService.thermalProtection.collectAsState()
-            val theme = darkColorScheme(primary = accent, onPrimary = background, background = background,
-                surface = surface, onSurface = Color.White, onBackground = Color.White)
-            MaterialTheme(colorScheme = theme) {
-                var page by remember { mutableStateOf("Home") }
-                val trigger = refresh
-                val installed = remember(trigger, settings.game) { gameInstalled(settings.game) }
-                Column(Modifier.fillMaxSize().background(background).verticalScroll(rememberScrollState())
-                    .padding(horizontal = 24.dp, vertical = 30.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(54.dp).background(surface, RoundedCornerShape(18.dp)), contentAlignment = Alignment.Center) {
-                            Text("S", fontSize = 34.sp, fontWeight = FontWeight.Black)
-                        }
-                        Spacer(Modifier.width(14.dp))
-                        Column {
-                            Text("STABLEX", fontSize = 25.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
-                            Text("Precision. Stability. Performance.", fontSize = 11.sp, color = muted)
-                        }
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        listOf("Home", "Profiles", "Status", "Settings").forEach { tab ->
-                            TextButton(onClick = { page = tab }) {
-                                Text(tab, color = if (page == tab) accent else muted, fontSize = 12.sp)
+            val protection by GamingSessionService.thermalProtection.collectAsState()
+            val update = refresh
+            val installed = remember(update, settings.game) { gameInstalled(settings.game) }
+            StablexUi(
+                settings = settings,
+                active = active,
+                thermalStatus = if (active) thermal else thermalLabel(),
+                protection = protection,
+                installed = installed,
+                message = message,
+                onProfile = { selected -> scope.launch { saveProfile(selected) } },
+                onGame = { selected -> scope.launch { saveGame(selected) } },
+                onDnd = { enabled -> scope.launch { saveDnd(enabled) } },
+                onLaunch = { 
+                    if (active) {
+                        startService(Intent(this@MainActivity, GamingSessionService::class.java)
+                            .setAction(GamingSessionService.STOP))
+                        message = "Ending session and restoring STABLEX settings"
+                    } else if (!installed) {
+                        message = "Install ${settings.game.label} before starting."
+                    } else if (settings.dnd &&
+                        !getSystemService(NotificationManager::class.java).isNotificationPolicyAccessGranted) {
+                        message = "Allow Do Not Disturb policy access in Setup."
+                    } else if (Build.VERSION.SDK_INT >= 33 &&
+                        ContextCompat.checkSelfPermission(this@MainActivity,
+                            Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                        message = "Allow notifications to use the session controls."
+                        notificationRequest.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    } else {
+                        try {
+                            val intent = Intent(this@MainActivity, GamingSessionService::class.java)
+                                .setAction(GamingSessionService.START)
+                                .putExtra("profile", settings.profile.name)
+                                .putExtra("dnd", settings.dnd)
+                            ContextCompat.startForegroundService(this@MainActivity, intent)
+                            val launcher = packageManager.getLaunchIntentForPackage(settings.game.pkg)
+                            if (launcher != null) startActivity(launcher) else {
+                                message = "The selected game could not be launched."
+                                startService(Intent(this@MainActivity, GamingSessionService::class.java)
+                                    .setAction(GamingSessionService.STOP))
                             }
-                        }
-                    }
-                    message?.let { Note(it) }
-                    when (page) {
-                        "Home" -> {
-                            Section("CURRENT POLICY")
-                            Panel {
-                                Text(if (protected) "THERMAL PROTECTION" else settings.profile.label,
-                                    fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                                Text(if (protected) "Thermal advisory override active" else
-                                    "User-authorized session controls only", color = muted, fontSize = 12.sp)
-                            }
-                            Section("GAME")
-                            TargetGame.entries.forEach { game ->
-                                Row(Modifier.fillMaxWidth().clickable(enabled = !active) {
-                                    scope.launch { saveGame(game) }
-                                }, verticalAlignment = Alignment.CenterVertically) {
-                                    RadioButton(selected = settings.game == game, enabled = !active,
-                                        onClick = { scope.launch { saveGame(game) } })
-                                    Column {
-                                        Text(game.label)
-                                        Text(if (gameInstalled(game)) "Installed" else "Not installed", fontSize = 11.sp, color = muted)
-                                    }
-                                }
-                            }
-                            Button(onClick = {
-                                if (active) {
-                                    startService(Intent(this@MainActivity, GamingSessionService::class.java)
-                                        .setAction(GamingSessionService.STOP))
-                                    message = "Stopping and restoring authorized settings"
-                                } else if (!installed) {
-                                    message = "Install ${settings.game.label} before starting."
-                                } else if (settings.dnd && !getSystemService(NotificationManager::class.java).isNotificationPolicyAccessGranted) {
-                                    message = "Grant Do Not Disturb access in Settings first."
-                                } else {
-                                    try {
-                                        val i = Intent(this@MainActivity, GamingSessionService::class.java)
-                                            .setAction(GamingSessionService.START)
-                                            .putExtra("profile", settings.profile.name)
-                                            .putExtra("dnd", settings.dnd)
-                                        ContextCompat.startForegroundService(this@MainActivity, i)
-                                        val launch = packageManager.getLaunchIntentForPackage(settings.game.pkg)
-                                        if (launch != null) startActivity(launch)
-                                        else {
-                                            message = "Game launcher not available"
-                                            startService(Intent(this@MainActivity, GamingSessionService::class.java)
-                                                .setAction(GamingSessionService.STOP))
-                                        }
-                                    } catch (e: Exception) {
-                                        message = "Android blocked the launch: ${e.javaClass.simpleName}"
-                                    }
-                                }
-                            }, modifier = Modifier.fillMaxWidth().height(60.dp), shape = RoundedCornerShape(18.dp)) {
-                                Text(if (active) "STOP & RESTORE" else "START GAMING",
-                                    fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
-                            }
-                            Text("Thermal: ${if (active) thermal else thermalLabel()}",
-                                color = muted, fontSize = 12.sp)
-                            Note("STABLEX cannot access real game FPS, change game inputs, or force CPU/GPU clocks.")
-                        }
-                        "Profiles" -> {
-                            Section("PERFORMANCE POLICIES")
-                            GamingProfile.entries.forEach { p ->
-                                Panel {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Column(Modifier.weight(1f)) {
-                                            Text(p.label, fontWeight = FontWeight.Bold)
-                                            Text(p.note, fontSize = 12.sp, color = muted)
-                                        }
-                                        RadioButton(selected = settings.profile == p,
-                                            onClick = { scope.launch { saveProfile(p) } })
-                                    }
-                                }
-                            }
-                            Note("Profiles adjust STABLEX monitoring, not the game's rendering engine.")
-                        }
-                        "Status" -> {
-                            Section("OFFLINE DIAGNOSTICS")
-                            Panel {
-                                Text("Device: ${Build.MANUFACTURER} ${Build.MODEL}")
-                                Text("Android: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
-                                Text("Display: ${windowManager.defaultDisplay.refreshRate.toInt()} Hz (not game FPS)")
-                                Text("Thermal: ${if (active) thermal else thermalLabel()}")
-                                Text("Network: ${networkLabel()}")
-                                Text("Session: ${if (active) "Active" else "Inactive"}")
-                            }
-                            Note("No external ping, jitter, packet loss, or BGMI server measurements are possible offline.")
-                        }
-                        "Settings" -> {
-                            Section("INTERRUPTION CONTROL")
-                            Panel {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text("Gaming Do Not Disturb", modifier = Modifier.weight(1f))
-                                    Switch(checked = settings.dnd, onCheckedChange = {
-                                        scope.launch { saveDnd(it) }
-                                    })
-                                }
-                                Text("Requires user-granted Notification Policy Access", color = muted, fontSize = 12.sp)
-                                Button(onClick = {
-                                    startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
-                                }) { Text("DND permission settings") }
-                            }
-                            Section("ABOUT")
-                            Panel {
-                                Text("STABLEX 0.1.0")
-                                Text("Offline · No account · No ads · No internet permission", color = muted)
-                                Text("Game autostart and floating sidebar are not in this verified build.",
-                                    fontSize = 12.sp, color = muted)
-                            }
+                        } catch (e: Exception) {
+                            message = "Android blocked the session: ${e.javaClass.simpleName}"
                         }
                     }
+                },
+                onPermission = { action ->
+                    try { startActivity(Intent(action)) }
+                    catch (_: Exception) { message = "This settings page is not available on this device." }
                 }
-            }
+            )
         }
     }
     override fun onResume() { super.onResume(); refresh++ }
